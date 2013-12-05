@@ -1,0 +1,14 @@
+OSXGUEST is the QEMU version of the OSXGUEST mod that can be found at:
+http://www.contrib.andrew.cmu.edu/~somlo/OSXKVM/
+
+My brother Orion Blastar made the attempt on Gabriel L. Somlo's code
+and I assisted my brother in getting it to compile and work.
+
+Orion found a bug in one of the patches and reported it to Gabriel who found that the SeaBIOS and QEMU code had changed and so he fixed the problem and rewrote the patch to work now.
+
+http://blastar.in
+http://www.blastar.org
+
+erisblastar@gmail.com
+erisblastar@att.net
+orionblastar@gmail.com

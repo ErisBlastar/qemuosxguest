@@ -1,0 +1,127 @@
+###############################################################################
+# Modify DSDT entry for HPET: conditionally insert "IRQNoFlags() {2, 8}" into
+# _CRS method only if an AppleSMC DSDT node is also present and enabled (it
+# otherwise causes WinXP to BSOD).
+###############################################################################
+diff --git a/hw/i386/acpi-dsdt-hpet.dsl b/hw/i386/acpi-dsdt-hpet.dsl
+index dfde174..205cf05 100644
+--- a/hw/i386/acpi-dsdt-hpet.dsl
++++ b/hw/i386/acpi-dsdt-hpet.dsl
+@@ -38,14 +38,23 @@ Scope(\_SB) {
+             }
+             Return (0x0F)
+         }
+-        Name(_CRS, ResourceTemplate() {
+-#if 0       /* This makes WinXP BSOD for not yet figured reasons. */
+-            IRQNoFlags() {2, 8}
+-#endif
++        Name(RESP, ResourceTemplate() {
+             Memory32Fixed(ReadOnly,
+                 0xFED00000,         // Address Base
+                 0x00000400,         // Address Length
+                 )
+         })
++        Name(RESI, ResourceTemplate() {
++            IRQNoFlags() {2, 8}
++        })
++        Method(_CRS, 0) {
++            Store(\_SB.PCI0.ISA.SMC._STA(), Local0)
++            If (LEqual(Local0, 0x0B)) {        // AppleSMC present, add IRQ
++                ConcatenateResTemplate(RESP, RESI, Local1)
++                Return (Local1)
++            } else {
++                Return (RESP)
++            }
++        }
+     }
+ }
+###############################################################################
+# Add DSDT entry for AppleSMC;
+# TODO: find a way to make the _STA method return 0x0b only if QEMU command
+# line contains "-device isa-applesmc", and 0x00 otherwise!
+###############################################################################
+diff --git a/hw/i386/acpi-dsdt-isa.dsl b/hw/i386/acpi-dsdt-isa.dsl
+index 89caa16..b7a27bb 100644
+--- a/hw/i386/acpi-dsdt-isa.dsl
++++ b/hw/i386/acpi-dsdt-isa.dsl
+@@ -16,6 +16,28 @@
+ /* Common legacy ISA style devices. */
+ Scope(\_SB.PCI0.ISA) {
+ 
++    Device (SMC) {
++        Name(_HID, EisaId("APP0001"))
++        OperationRegion(SMC, SystemIO, 0x0300, 0x20)
++        Field(SMC, ByteAcc, NoLock, Preserve) {
++            Offset(0x04),
++            CMDP, 8,
++        }
++        Method(_STA, 0) {
++//            Store(0x10, CMDP)    // APPLESMC_READ_CMD
++//            Store(CMDP, Local0)
++//            If (LEqual(Local0, 0x0c)) {
++                Return (0x0B)
++//            } Else {
++//                Return (0x00)
++//            }
++        }
++        Name (_CRS, ResourceTemplate () {
++            IO (Decode16, 0x0300, 0x0300, 0x01, 0x20)
++            IRQNoFlags() { 6 }
++        })
++    }
++
+     Device(RTC) {
+         Name(_HID, EisaId("PNP0B00"))
+         Name(_CRS, ResourceTemplate() {
+###############################################################################
+# Extra hack to get e1000 to link up on boot with an xnu guest; This patch is
+# currently conveniently applied against QEMU, but it "morally" belongs in the
+# BIOS, along with commit 372254c6e5c078fb13b236bb648d2b9b2b0c70f1, which, if a
+# BIOS patch is successfully accepted, should eventually be reverted from QEMU.
+###############################################################################
+diff --git a/hw/net/e1000.c b/hw/net/e1000.c
+index ae63591..40ea4ca 100644
+--- a/hw/net/e1000.c
++++ b/hw/net/e1000.c
+@@ -186,6 +186,9 @@ e1000_link_up(E1000State *s)
+     s->phy_reg[PHY_STATUS] |= MII_SR_LINK_STATUS;
+ }
+ 
++/* Forward decl. for use in set_phy_ctrl() (OS X link nego. workaround) */
++static void set_ics(E1000State *s, int index, uint32_t val);
++
+ static void
+ set_phy_ctrl(E1000State *s, int index, uint16_t val)
+ {
+@@ -197,6 +200,15 @@ set_phy_ctrl(E1000State *s, int index, uint16_t val)
+     if (!(s->compat_flags & E1000_FLAG_AUTONEG)) {
+         return;
+     }
++    /*
++     * The Mac OS X driver expects a pre-initialized network card; injecting
++     * an extra LSC event here allows initial link negotiation to succeed in
++     * the absence of the Apple EFI BIOS.
++     */
++    if ((val & MII_CR_RESET)) {
++        set_ics(s, 0, E1000_ICR_LSC);
++        return;
++    }
+     if ((val & MII_CR_AUTO_NEG_EN) && (val & MII_CR_RESTART_AUTO_NEG)) {
+         e1000_link_down(s);
+         s->phy_reg[PHY_STATUS] &= ~MII_SR_AUTONEG_COMPLETE;
+@@ -1159,8 +1171,14 @@ set_imc(E1000State *s, int index, uint32_t val)
+ static void
+ set_ims(E1000State *s, int index, uint32_t val)
+ {
++    uint32_t ics_val = 0;
++
++    /* When Mac OS X initially unmasks LSC, it expects to see it set in ICS */
++    if (s->mac_reg[IMS] == 0 && (val & E1000_IMS_LSC))
++        ics_val |= E1000_ICR_LSC;
++
+     s->mac_reg[IMS] |= val;
+-    set_ics(s, 0, 0);
++    set_ics(s, 0, ics_val);
+ }
+ 
+ #define getreg(x)	[x] = mac_readreg
